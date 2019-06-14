@@ -26,6 +26,8 @@
 #include <sensor_msgs/Image.h>
 #include <geometry_msgs/Point.h>
 #include <image_transport/image_transport.h>
+#include <message_filters/subscriber.h>
+#include <message_filters/time_synchronizer.h>
 
 // OpenCv
 #include <opencv2/imgproc/imgproc.hpp>
@@ -74,6 +76,7 @@ typedef struct
 {
   IplImage* image;
   std_msgs::Header header;
+  sensor_msgs::Image depth;
 } IplImageWithHeader_;
 
 class YoloObjectDetector
@@ -105,7 +108,8 @@ class YoloObjectDetector
    * Callback of camera.
    * @param[in] msg image pointer.
    */
-  void cameraCallback(const sensor_msgs::ImageConstPtr& msg);
+  void cameraCallback(const sensor_msgs::ImageConstPtr& msg, const sensor_msgs::ImageConstPtr& depth_msg);
+//   void cameraCallback(const sensor_msgs::ImageConstPtr& msg);
 
   /*!
    * Check for objects action goal callback.
@@ -148,8 +152,12 @@ class YoloObjectDetector
 
   //! ROS subscriber and publisher.
   image_transport::Subscriber imageSubscriber_;
+  message_filters::Subscriber<sensor_msgs::Image> *image_sub;
+  message_filters::Subscriber<sensor_msgs::Image> *depth_sub;
+  message_filters::TimeSynchronizer<sensor_msgs::Image, sensor_msgs::Image> *sync;
   ros::Publisher objectPublisher_;
   ros::Publisher boundingBoxesPublisher_;
+  ros::Publisher depthPublisher_;
 
   //! Detected objects.
   std::vector<std::vector<RosBox_> > rosBoxes_;
@@ -173,6 +181,7 @@ class YoloObjectDetector
 
   network *net_;
   std_msgs::Header headerBuff_[3];
+  sensor_msgs::Image depthBuff_[3];
   image buff_[3];
   image buffLetter_[3];
   int buffId_[3];
@@ -202,6 +211,7 @@ class YoloObjectDetector
   char *demoPrefix_;
 
   std_msgs::Header imageHeader_;
+  sensor_msgs::Image imageDepth_;
   cv::Mat camImageCopy_;
   boost::shared_mutex mutexImageCallback_;
 

@@ -128,11 +128,13 @@ void YoloObjectDetector::init()
 
   // Initialize publisher and subscriber.
   std::string cameraTopicName;
+  std::string depthTopicName;
   int cameraQueueSize;
   std::string objectDetectorTopicName;
   int objectDetectorQueueSize;
   bool objectDetectorLatch;
   std::string boundingBoxesTopicName;
+  std::string correspondingDepthTopicName;
   int boundingBoxesQueueSize;
   bool boundingBoxesLatch;
   std::string detectionImageTopicName;
@@ -141,6 +143,8 @@ void YoloObjectDetector::init()
 
   nodeHandle_.param("subscribers/camera_reading/topic", cameraTopicName,
                     std::string("/camera/image_raw"));
+  nodeHandle_.param("subscribers/depth_reading/topic", depthTopicName,
+                    std::string("/camera/aligned_depth_to_color/image_raw"));
   nodeHandle_.param("subscribers/camera_reading/queue_size", cameraQueueSize, 1);
   nodeHandle_.param("publishers/object_detector/topic", objectDetectorTopicName,
                     std::string("found_object"));
@@ -148,6 +152,8 @@ void YoloObjectDetector::init()
   nodeHandle_.param("publishers/object_detector/latch", objectDetectorLatch, false);
   nodeHandle_.param("publishers/bounding_boxes/topic", boundingBoxesTopicName,
                     std::string("bounding_boxes"));
+  nodeHandle_.param("publishers/corresponding_depth/topic", correspondingDepthTopicName,
+                    std::string("corresponding_depth"));
   nodeHandle_.param("publishers/bounding_boxes/queue_size", boundingBoxesQueueSize, 1);
   nodeHandle_.param("publishers/bounding_boxes/latch", boundingBoxesLatch, false);
   nodeHandle_.param("publishers/detection_image/topic", detectionImageTopicName,
@@ -155,13 +161,22 @@ void YoloObjectDetector::init()
   nodeHandle_.param("publishers/detection_image/queue_size", detectionImageQueueSize, 1);
   nodeHandle_.param("publishers/detection_image/latch", detectionImageLatch, true);
 
-  imageSubscriber_ = imageTransport_.subscribe(cameraTopicName, cameraQueueSize,
-                                               &YoloObjectDetector::cameraCallback, this);
+  if (true) {
+    image_sub = new message_filters::Subscriber<sensor_msgs::Image>(nodeHandle_, cameraTopicName, 1);
+    depth_sub = new message_filters::Subscriber<sensor_msgs::Image>(nodeHandle_, depthTopicName, 1);
+    sync = new message_filters::TimeSynchronizer<sensor_msgs::Image, sensor_msgs::Image>(*image_sub, *depth_sub, 10);
+    sync->registerCallback(boost::bind(&YoloObjectDetector::cameraCallback, this, _1, _2));
+  } else {
+//     imageSubscriber_ = imageTransport_.subscribe(cameraTopicName, cameraQueueSize,
+//                                                  &YoloObjectDetector::cameraCallback, this);
+  }
   objectPublisher_ = nodeHandle_.advertise<std_msgs::Int8>(objectDetectorTopicName,
                                                            objectDetectorQueueSize,
                                                            objectDetectorLatch);
   boundingBoxesPublisher_ = nodeHandle_.advertise<darknet_ros_msgs::BoundingBoxes>(
       boundingBoxesTopicName, boundingBoxesQueueSize, boundingBoxesLatch);
+  depthPublisher_ = nodeHandle_.advertise<sensor_msgs::Image>(
+      correspondingDepthTopicName, boundingBoxesQueueSize, boundingBoxesLatch);
   detectionImagePublisher_ = nodeHandle_.advertise<sensor_msgs::Image>(detectionImageTopicName,
                                                                        detectionImageQueueSize,
                                                                        detectionImageLatch);
@@ -179,7 +194,7 @@ void YoloObjectDetector::init()
   checkForObjectsActionServer_->start();
 }
 
-void YoloObjectDetector::cameraCallback(const sensor_msgs::ImageConstPtr& msg)
+void YoloObjectDetector::cameraCallback(const sensor_msgs::ImageConstPtr& msg, const sensor_msgs::ImageConstPtr& depth_msg)
 {
   ROS_DEBUG("[YoloObjectDetector] USB image received.");
 
@@ -196,6 +211,7 @@ void YoloObjectDetector::cameraCallback(const sensor_msgs::ImageConstPtr& msg)
     {
       boost::unique_lock<boost::shared_mutex> lockImageCallback(mutexImageCallback_);
       imageHeader_ = msg->header;
+      imageDepth_ = *depth_msg;
       camImageCopy_ = cam_image->image.clone();
     }
     {
@@ -410,6 +426,7 @@ void *YoloObjectDetector::fetchInThread()
   IplImage* ROS_img = imageAndHeader.image;
   ipl_into_image(ROS_img, buff_[buffIndex_]);
   headerBuff_[buffIndex_] = imageAndHeader.header;
+  depthBuff_[buffIndex_] = imageAndHeader.depth;
   {
     boost::shared_lock<boost::shared_mutex> lock(mutexImageCallback_);
     buffId_[buffIndex_] = actionId_;
@@ -510,6 +527,9 @@ void YoloObjectDetector::yolo()
   headerBuff_[0] = imageAndHeader.header;
   headerBuff_[1] = headerBuff_[0];
   headerBuff_[2] = headerBuff_[0];
+  depthBuff_[0] = imageAndHeader.depth;
+  depthBuff_[1] = depthBuff_[0];
+  depthBuff_[2] = depthBuff_[0];
   buffLetter_[0] = letterbox_image(buff_[0], net_->w, net_->h);
   buffLetter_[1] = letterbox_image(buff_[0], net_->w, net_->h);
   buffLetter_[2] = letterbox_image(buff_[0], net_->w, net_->h);
@@ -559,7 +579,7 @@ IplImageWithHeader_ YoloObjectDetector::getIplImageWithHeader()
 {
   boost::shared_lock<boost::shared_mutex> lock(mutexImageCallback_);
   IplImage* ROS_img = new IplImage(camImageCopy_);
-  IplImageWithHeader_ header = {.image = ROS_img, .header = imageHeader_};
+  IplImageWithHeader_ header = {.image = ROS_img, .header = imageHeader_, .depth = imageDepth_};
   return header;
 }
 
@@ -623,6 +643,7 @@ void *YoloObjectDetector::publishInThread()
     boundingBoxesResults_.image_header = headerBuff_[(buffIndex_ + 1) % 3];
     boundingBoxesResults_.header.stamp = boundingBoxesResults_.image_header.stamp;
     boundingBoxesPublisher_.publish(boundingBoxesResults_);
+    depthPublisher_.publish(depthBuff_[(buffIndex_ + 1) % 3]);
   } else {
     std_msgs::Int8 msg;
     msg.data = 0;
